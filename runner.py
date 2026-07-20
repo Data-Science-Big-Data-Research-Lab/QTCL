@@ -75,6 +75,8 @@ def generate_main_runs(config: Dict[str, Any]) -> List[RunConfig]:
             bb_name = bb["name"] if isinstance(bb, dict) else bb
             for hd in config["heads"]:
                 hd_name = hd["name"] if isinstance(hd, dict) else hd
+                if hd_name not in ["mlp", "qk_ideal", "qk_noisy"]:
+                    continue
                 if ds_name == "split_cifar100_20" and hd_name not in ["mlp", "qk_ideal", "qk_noisy"]:
                     continue
                 for seed in config["seeds"]:
@@ -88,7 +90,7 @@ def generate_main_runs(config: Dict[str, Any]) -> List[RunConfig]:
 def generate_ablation_runs(config: Dict[str, Any]) -> List[RunConfig]:
     runs = []
     ab = config.get("ablation", {})
-    if not ab:
+    if not ab or not ab.get("enabled", True):
         return runs
     default_q, default_d = 4, 2
     for ds in ab.get("datasets", []):
@@ -120,7 +122,7 @@ def generate_ablation_runs(config: Dict[str, Any]) -> List[RunConfig]:
 def generate_lambda_runs(config: Dict[str, Any]) -> List[RunConfig]:
     runs = []
     ls = config.get("lambda_sensitivity", {})
-    if not ls:
+    if not ls or not ls.get("enabled", True):
         return runs
     for ds in ls.get("datasets", []):
         for bb in ls.get("backbones", []):
@@ -139,7 +141,7 @@ def generate_lambda_runs(config: Dict[str, Any]) -> List[RunConfig]:
 def generate_derpp_runs(config: Dict[str, Any]) -> List[RunConfig]:
     runs = []
     ds = config.get("derpp_sensitivity", {})
-    if not ds:
+    if not ds or not ds.get("enabled", True):
         return runs
     for dataset in ds.get("datasets", []):
         for bb in ds.get("backbones", []):
@@ -159,7 +161,7 @@ def generate_derpp_runs(config: Dict[str, Any]) -> List[RunConfig]:
 def generate_scalability_runs(config: Dict[str, Any]) -> List[RunConfig]:
     runs = []
     sc = config.get("scalability", {})
-    if not sc:
+    if not sc or not sc.get("enabled", True):
         return runs
     for ds in sc.get("datasets", []):
         ds_cfg = next((d for d in config["datasets"] if d["name"] == ds), {})
@@ -179,7 +181,7 @@ def generate_scalability_runs(config: Dict[str, Any]) -> List[RunConfig]:
 def generate_cl_methods_runs(config: Dict[str, Any]) -> List[RunConfig]:
     runs = []
     cs = config.get("cl_methods_study", {})
-    if not cs:
+    if not cs or not cs.get("enabled", True):
         return runs
     for ds in cs.get("datasets", []):
         for bb in cs.get("backbones", []):
@@ -198,7 +200,7 @@ def generate_cl_methods_runs(config: Dict[str, Any]) -> List[RunConfig]:
 def generate_arch_variants_runs(config: Dict[str, Any]) -> List[RunConfig]:
     runs = []
     av = config.get("arch_variants", {})
-    if not av:
+    if not av or not av.get("enabled", True):
         return runs
     for ds in av.get("datasets", []):
         for bb in av.get("backbones", []):
@@ -215,7 +217,7 @@ def generate_arch_variants_runs(config: Dict[str, Any]) -> List[RunConfig]:
 def generate_noise_decomposition_runs(config: Dict[str, Any]) -> List[RunConfig]:
     runs = []
     nd = config.get("noise_decomposition", {})
-    if not nd:
+    if not nd or not nd.get("enabled", True):
         return runs
     for ds in nd.get("datasets", []):
         for bb in nd.get("backbones", []):
@@ -240,7 +242,7 @@ def generate_noise_decomposition_runs(config: Dict[str, Any]) -> List[RunConfig]
 def generate_noise_mitigation_runs(config: Dict[str, Any]) -> List[RunConfig]:
     runs = []
     nm = config.get("noise_mitigation_study", {})
-    if not nm:
+    if not nm or not nm.get("enabled", True):
         return runs
     for ds in nm.get("datasets", []):
         for bb in nm.get("backbones", []):
@@ -259,7 +261,7 @@ def generate_noise_mitigation_runs(config: Dict[str, Any]) -> List[RunConfig]:
 def generate_spsa_variants_runs(config: Dict[str, Any]) -> List[RunConfig]:
     runs = []
     sv = config.get("spsa_variants_study", {})
-    if not sv:
+    if not sv or not sv.get("enabled", True):
         return runs
     for ds in sv.get("datasets", []):
         for bb in sv.get("backbones", []):
@@ -271,6 +273,25 @@ def generate_spsa_variants_runs(config: Dict[str, Any]) -> List[RunConfig]:
                             dataset=ds, backbone=bb, head=hd, seed=seed,
                             study="spsa_variants_study",
                             overrides={"spsa_variant": var},
+                        ))
+    return runs
+
+
+def generate_realhardware_runs(config: Dict[str, Any]) -> List[RunConfig]:
+    runs = []
+    rh = config.get("realhardware", {})
+    if not rh or not rh.get("enabled", True):
+        return runs
+    for ds in rh.get("datasets", []):
+        for bb in rh.get("backbones", []):
+            for hd in rh.get("heads", []):
+                for mit in rh.get("mitigations", []):
+                    for seed in rh.get("seeds", [42]):
+                        runs.append(RunConfig(
+                            run_id=f"{ds}_{bb}_{hd}_realhardware_{mit}_{seed}",
+                            dataset=ds, backbone=bb, head=hd, seed=seed,
+                            study="realhardware",
+                            overrides={"noise_mitigation": mit},
                         ))
     return runs
 
@@ -324,15 +345,24 @@ def scan_completed(output_dir: str) -> Set[str]:
     completed: Set[str] = set()
     if not os.path.exists(output_dir):
         return completed
-    for folder in os.listdir(output_dir):
+    folders = os.listdir(output_dir)
+    import concurrent.futures
+    
+    def process_folder(folder):
         csv_path = os.path.join(output_dir, folder, "runs.csv")
         if os.path.exists(csv_path):
             try:
                 df = pd.read_csv(csv_path)
                 if "run_id" in df.columns:
-                    completed.update(df["run_id"].astype(str))
+                    return set(df["run_id"].astype(str))
             except Exception:
                 pass
+        return set()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
+        results = executor.map(process_folder, folders)
+        for r in results:
+            completed.update(r)
     return completed
 
 
@@ -413,7 +443,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--study",       default=None,
                    choices=["ablation", "lambda_sensitivity", "derpp_sensitivity",
                             "scalability", "noise_decomposition", "cl_methods", "arch_variants",
-                            "noise_mitigation_study", "spsa_variants_study"])
+                            "noise_mitigation_study", "spsa_variants_study", "realhardware"])
     p.add_argument("--dry-run",     action="store_true")
     p.add_argument("--count",       action="store_true")
     p.add_argument("--export-commands", action="store_true")
@@ -509,6 +539,8 @@ def main() -> int:
         runs = generate_noise_mitigation_runs(config)
     elif args.study == "spsa_variants_study":
         runs = generate_spsa_variants_runs(config)
+    elif args.study == "realhardware":
+        runs = generate_realhardware_runs(config)
     else:
         runs = generate_main_runs(config)
 

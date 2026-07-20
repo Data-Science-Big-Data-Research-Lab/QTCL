@@ -183,6 +183,12 @@ def train_task(
             logits = model(x)
             loss = criterion(logits, y)
 
+            # Online reservoir update (COD2)
+            if isinstance(cl_method, ReplayCL):
+                cl_method.store(x, y)
+            elif isinstance(cl_method, DERPPCL):
+                cl_method.store_with_logits(x, y, logits)
+
             # Vanilla replay: hard-label CE on replayed batch
             if isinstance(cl_method, ReplayCL):
                 replay = cl_method.replay_batch(x.size(0))
@@ -330,7 +336,10 @@ def train_and_evaluate(
 
     model = QTCLModel(backbone, feature_dim).to(device)
 
-    # Single shared head across all tasks → catastrophic forgetting is measurable
+    # Seed before head instantiation to ensure deterministic weight initialization (COD9)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
     shared_head = get_head(head_cfg, feature_dim, n_classes=2, seed=seed).to(device)
     model.set_head(shared_head)
 
@@ -349,8 +358,8 @@ def train_and_evaluate(
 
     # CL method (EWC by default, configurable via overrides or config)
     cl_method_name = overrides.get("cl_method", config.get("cl_method", "ewc"))
-    if head_name == "qk_noisy":
-        cl_method_name = "derpp"
+    # if head_name == "qk_noisy":
+    #     cl_method_name = "derpp"
     derpp_cfg = config.get("derpp", {})
     buffer_size = overrides.get("buffer_size", ds_cfg.get("buffer_size", ewc_cfg.get("buffer_size", 200)))
     cl_method = get_cl_method(cl_method_name, lam=lambda_ewc,

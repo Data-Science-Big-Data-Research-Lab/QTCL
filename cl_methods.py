@@ -249,30 +249,21 @@ class DERPPCL(BaseCLMethod):
     def store_with_logits(self, x: torch.Tensor, y: torch.Tensor,
                           logits: torch.Tensor) -> None:
         for i in range(x.size(0)):
+            self._seen += 1
             if len(self._x) < self.buffer_size:
                 self._x.append(x[i].detach().cpu())
                 self._y.append(y[i].detach().cpu())
                 self._logits.append(logits[i].detach().cpu())
             else:
-                idx = random.randint(0, self._seen)
+                idx = random.randint(0, self._seen - 1)
                 if idx < self.buffer_size:
                     self._x[idx]      = x[i].detach().cpu()
                     self._y[idx]      = y[i].detach().cpu()
                     self._logits[idx] = logits[i].detach().cpu()
-            self._seen += 1
 
     def update(self, model: nn.Module, loader: DataLoader, device: torch.device,
                n_samples: int = 200) -> None:
-        # Snapshot end-of-task logits with current model
-        model.eval()
-        count = 0
-        with torch.no_grad():
-            for x, y in loader:
-                if count >= n_samples:
-                    break
-                logits = model(x.to(device)).cpu()
-                self.store_with_logits(x, y, logits)
-                count += x.size(0)
+        # Increment task counter. Logits are stored online during training steps.
         self._n_tasks += 1
 
     def replay_batches(self, batch_size: int):
@@ -311,25 +302,19 @@ class ReplayCL(BaseCLMethod):
 
     def store(self, x: torch.Tensor, y: torch.Tensor) -> None:
         for i in range(x.size(0)):
+            self._seen += 1
             if len(self._buffer_x) < self.buffer_size:
                 self._buffer_x.append(x[i].detach().cpu())
                 self._buffer_y.append(y[i].detach().cpu())
             else:
-                idx = random.randint(0, self._seen)
+                idx = random.randint(0, self._seen - 1)
                 if idx < self.buffer_size:
                     self._buffer_x[idx] = x[i].detach().cpu()
                     self._buffer_y[idx] = y[i].detach().cpu()
-            self._seen += 1
 
     def update(self, model: nn.Module, loader: DataLoader, device: torch.device,
                n_samples: int = 200) -> None:
-        # Snapshot the last samples seen during training of this task
-        count = 0
-        for x, y in loader:
-            self.store(x, y)
-            count += x.size(0)
-            if count >= n_samples:
-                break
+        # Increment task counter. Samples are stored online during training steps.
         self._n_tasks += 1
 
     def replay_batch(self, batch_size: int) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
