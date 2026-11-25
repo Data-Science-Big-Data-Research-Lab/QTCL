@@ -34,6 +34,8 @@ def get_head(head_cfg: Dict[str, Any], feature_dim: int, n_classes: int = 2,
             fusion_method=head_cfg.get("fusion_method", "add"),
             noise_mitigation=head_cfg.get("noise_mitigation", None),
             spsa_variant=head_cfg.get("spsa_variant", None),
+            train_encoder=head_cfg.get("train_encoder", False),
+            estimator_precision=head_cfg.get("estimator_precision", 1 / 64),
         )
     else:
         raise ValueError(f"Unknown head type: {head_type}")

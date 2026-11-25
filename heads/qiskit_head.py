@@ -149,7 +149,7 @@ def _make_estimator(noise: bool, noise_params: Optional[Dict], noise_channels: O
 
     if not noise or backend_name == "statevector":
         from qiskit.primitives import StatevectorEstimator
-        return StatevectorEstimator(), None
+        return StatevectorEstimator(seed=seed), None
 
     if backend_name in ("aer", "aer_simulator"):
         # Noisy: Aer's native EstimatorV2 with noise_model in backend_options.
@@ -214,6 +214,13 @@ class QiskitHead(nn.Module):
                    Classical: Linear(d, 128) -> ReLU
                    Quantum:   Linear(d, n_q) -> tanh -> VQC
                    Output:    Linear(128 + n_q, n_classes) applied to concatenated features.
+
+    train_encoder: when False (default), the linear encoder that maps the features to the circuit
+        inputs keeps its random initialization and is not trained. When True, the circuit layer
+        propagates gradients to its inputs and the encoder is trained with the rest of the head.
+    estimator_precision: target precision of each estimated expectation value. The estimators add
+        Gaussian noise with this standard deviation; 0 gives exact statevector values in the ideal
+        backend. The default, 1/64, is the precision used in the reported experiments.
     """
 
     def __init__(
@@ -233,6 +240,8 @@ class QiskitHead(nn.Module):
         fusion_method: str = "add",
         noise_mitigation: Optional[str] = None,
         spsa_variant: Optional[str] = None,
+        train_encoder: bool = False,
+        estimator_precision: float = 1 / 64,
     ):
         super().__init__()
         self.n_qubits = n_qubits
@@ -257,6 +266,7 @@ class QiskitHead(nn.Module):
             self.alpha = nn.Parameter(torch.tensor(0.5))
 
         self.q_encoder = nn.Linear(feature_dim, n_qubits)
+        self.q_encoder.requires_grad_(train_encoder)
 
         from qiskit_machine_learning.neural_networks import EstimatorQNN
         from qiskit_machine_learning.connectors import TorchConnector
@@ -300,6 +310,8 @@ class QiskitHead(nn.Module):
             input_params=list(inputs_pv),
             weight_params=list(weights_pv),
             gradient=gradient,
+            input_gradients=train_encoder,
+            default_precision=estimator_precision,
             pass_manager=pm,
         )
 

@@ -229,8 +229,10 @@ class DERPPCL(BaseCLMethod):
     distillation signal across tasks. The CE term provides the hard-label
     consistency. Two independent replay batches are sampled.
 
-    The trainer must call store_with_logits(x, y, logits) during training and
-    use replay_batches() each step.
+    The buffer is filled by update() at the end of each task: the first
+    n_samples training examples of the task are passed through the trained
+    model and offered to the reservoir with the resulting logits.
+    The trainer calls replay_batches() at each step.
     """
     name = "derpp"
 
@@ -249,21 +251,30 @@ class DERPPCL(BaseCLMethod):
     def store_with_logits(self, x: torch.Tensor, y: torch.Tensor,
                           logits: torch.Tensor) -> None:
         for i in range(x.size(0)):
-            self._seen += 1
             if len(self._x) < self.buffer_size:
                 self._x.append(x[i].detach().cpu())
                 self._y.append(y[i].detach().cpu())
                 self._logits.append(logits[i].detach().cpu())
             else:
-                idx = random.randint(0, self._seen - 1)
+                idx = random.randint(0, self._seen)
                 if idx < self.buffer_size:
                     self._x[idx]      = x[i].detach().cpu()
                     self._y[idx]      = y[i].detach().cpu()
                     self._logits[idx] = logits[i].detach().cpu()
+            self._seen += 1
 
     def update(self, model: nn.Module, loader: DataLoader, device: torch.device,
                n_samples: int = 200) -> None:
-        # Increment task counter. Logits are stored online during training steps.
+        # Snapshot end-of-task logits with current model
+        model.eval()
+        count = 0
+        with torch.no_grad():
+            for x, y in loader:
+                if count >= n_samples:
+                    break
+                logits = model(x.to(device)).cpu()
+                self.store_with_logits(x, y, logits)
+                count += x.size(0)
         self._n_tasks += 1
 
     def replay_batches(self, batch_size: int):
@@ -302,19 +313,25 @@ class ReplayCL(BaseCLMethod):
 
     def store(self, x: torch.Tensor, y: torch.Tensor) -> None:
         for i in range(x.size(0)):
-            self._seen += 1
             if len(self._buffer_x) < self.buffer_size:
                 self._buffer_x.append(x[i].detach().cpu())
                 self._buffer_y.append(y[i].detach().cpu())
             else:
-                idx = random.randint(0, self._seen - 1)
+                idx = random.randint(0, self._seen)
                 if idx < self.buffer_size:
                     self._buffer_x[idx] = x[i].detach().cpu()
                     self._buffer_y[idx] = y[i].detach().cpu()
+            self._seen += 1
 
     def update(self, model: nn.Module, loader: DataLoader, device: torch.device,
                n_samples: int = 200) -> None:
-        # Increment task counter. Samples are stored online during training steps.
+        # Snapshot the last samples seen during training of this task
+        count = 0
+        for x, y in loader:
+            self.store(x, y)
+            count += x.size(0)
+            if count >= n_samples:
+                break
         self._n_tasks += 1
 
     def replay_batch(self, batch_size: int) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
@@ -330,6 +347,24 @@ class ReplayCL(BaseCLMethod):
 
 
 # ── Factory ───────────────────────────────────────────────────────────────────
+
+# Configuration section and key that hold the coefficient of each method. Naive and DER++ have none.
+_COEFFICIENT = {"ewc": ("ewc", "lambda"), "l2": ("l2", "lambda"), "si": ("si", "lambda"), "replay": ("replay", "weight")}
+
+
+def method_coefficient(config: dict, name: str) -> Optional[float]:
+    """Coefficient of a continual learning method, read from its own configuration section.
+
+    Returns None for methods without a coefficient and raises KeyError when the section or key is
+    missing, so that no method takes the coefficient of another one.
+    """
+    if name not in _COEFFICIENT:
+        return None
+    section, key = _COEFFICIENT[name]
+    if key not in (config.get(section) or {}):
+        raise KeyError(f"cl_method '{name}' needs '{section}.{key}' in the configuration")
+    return float(config[section][key])
+
 
 def get_cl_method(name: str, lam: float = 5000.0, **kwargs) -> BaseCLMethod:
     name = (name or "ewc").lower()

@@ -15,6 +15,8 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 from typing import List, Tuple, Optional
 
+from .seeding import seed_worker
+
 
 MNIST_DIGIT_PAIRS: List[Tuple[int, int]] = [
     (0, 1), (2, 3), (4, 5), (6, 7), (8, 9),
@@ -71,6 +73,7 @@ class SplitMNIST:
         train_tf = transforms.Compose([
             transforms.Resize(image_size),
             transforms.Grayscale(num_output_channels=3),
+            transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(mean, std),
         ])
@@ -159,19 +162,10 @@ def get_task_loaders(
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     train_ds, val_ds, test_ds = dataset.get_task(task_id)
     
-    g = torch.Generator()
-    g.manual_seed(dataset.seed)
-    
-    def seed_worker(worker_id):
-        worker_seed = torch.initial_seed() % 2**32
-        np.random.seed(worker_seed)
-        import random
-        random.seed(worker_seed)
-
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True,  
         num_workers=num_workers, pin_memory=True,
-        generator=g, worker_init_fn=seed_worker
+        worker_init_fn=seed_worker
     )
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
     test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)

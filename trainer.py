@@ -18,7 +18,7 @@ import torchvision.models as models
 
 from data import SplitCIFAR10, SplitMNIST, SplitCIFAR100, get_task_loaders
 from heads import get_head, count_trainable_params
-from cl_methods import get_cl_method, ReplayCL, DERPPCL
+from cl_methods import get_cl_method, method_coefficient, ReplayCL, DERPPCL
 from metrics import CLMetrics, supervised_metrics
 
 try:
@@ -183,12 +183,6 @@ def train_task(
             logits = model(x)
             loss = criterion(logits, y)
 
-            # Online reservoir update (COD2)
-            if isinstance(cl_method, ReplayCL):
-                cl_method.store(x, y)
-            elif isinstance(cl_method, DERPPCL):
-                cl_method.store_with_logits(x, y, logits)
-
             # Vanilla replay: hard-label CE on replayed batch
             if isinstance(cl_method, ReplayCL):
                 replay = cl_method.replay_batch(x.size(0))
@@ -259,7 +253,24 @@ def train_and_evaluate(
         result:       Summary dict with AA, AF, BWT, timing, param counts.
         predictions:  Per-task-per-sample predictions (empty list for now).
         training_log: Per-epoch training metrics.
+
+    If the run raises, its energy tracker is stopped before the exception propagates, so that the
+    next run of the same process can start its own tracker.
     """
+    active_trackers: List[Any] = []
+    try:
+        return _train_and_evaluate(run_config, config, overrides, active_trackers)
+    except BaseException:
+        for tracker in active_trackers:
+            try:
+                tracker.stop()
+            except Exception as e:
+                logger.warning(f"[{run_config.run_id}] CodeCarbon stop failed: {e}")
+        raise
+
+
+def _train_and_evaluate(run_config, config, overrides, active_trackers):
+    """Body of train_and_evaluate; a started energy tracker is appended to active_trackers."""
     if overrides is None:
         overrides = {}
 
@@ -336,10 +347,7 @@ def train_and_evaluate(
 
     model = QTCLModel(backbone, feature_dim).to(device)
 
-    # Seed before head instantiation to ensure deterministic weight initialization (COD9)
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
+    # Single shared head across all tasks; its initialization follows the global seed set at the start of the run
     shared_head = get_head(head_cfg, feature_dim, n_classes=2, seed=seed).to(device)
     model.set_head(shared_head)
 
@@ -362,7 +370,8 @@ def train_and_evaluate(
     #     cl_method_name = "derpp"
     derpp_cfg = config.get("derpp", {})
     buffer_size = overrides.get("buffer_size", ds_cfg.get("buffer_size", ewc_cfg.get("buffer_size", 200)))
-    cl_method = get_cl_method(cl_method_name, lam=lambda_ewc,
+    cl_coefficient = overrides.get("lambda", method_coefficient(config, cl_method_name))
+    cl_method = get_cl_method(cl_method_name, lam=cl_coefficient if cl_coefficient is not None else 0.0,
                               buffer_size=buffer_size,
                               alpha=overrides.get("alpha", derpp_cfg.get("alpha", 0.5)),
                               beta=overrides.get("beta", derpp_cfg.get("beta", 0.5)))
@@ -386,6 +395,7 @@ def train_and_evaluate(
                 save_to_file=True,
             )
             tracker.start()
+            active_trackers.append(tracker)
         except Exception as e:
             logger.warning(f"[{run_id}] CodeCarbon init failed: {e}")
             tracker = None
@@ -404,7 +414,7 @@ def train_and_evaluate(
         train_loader, val_loader, test_loader = get_task_loaders(
             dataset, task_id,
             batch_size=train_cfg["batch_size"],
-            num_workers=2,
+            num_workers=train_cfg.get("num_workers", 2),
         )
         val_loaders.append(val_loader)
         test_loaders.append(test_loader)
@@ -439,7 +449,7 @@ def train_and_evaluate(
             if j > task_id and j >= len(test_loaders):
                 # Build the loader for a future task (only first time)
                 _, _, future_test = get_task_loaders(
-                    dataset, j, batch_size=train_cfg["batch_size"], num_workers=2
+                    dataset, j, batch_size=train_cfg["batch_size"], num_workers=train_cfg.get("num_workers", 2)
                 )
                 while len(test_loaders) <= j:
                     test_loaders.append(None)
@@ -448,18 +458,19 @@ def train_and_evaluate(
 
             acc, y_true, y_pred, y_score = evaluate_full(model, test_loaders[j], device)
 
-            # Save per-task supervised metrics + plots only for the current task
-            if j == task_id and HAS_VIZ:
+            # Supervised metrics of the current task, measured right after training on it; plots if available
+            if j == task_id:
                 sm = supervised_metrics(y_true, y_pred, y_score)
                 sm.update({"task_id": task_id, "after_task": task_id})
                 per_task_metrics.append(sm)
-                try:
-                    viz.plot_confusion_matrix(y_true, y_pred, plots_dir, run_id, task_id)
-                    viz.plot_roc(y_true, y_score, plots_dir, run_id, task_id)
-                    viz.plot_pr(y_true, y_score, plots_dir, run_id, task_id)
-                    viz.plot_probability_histogram(y_true, y_score, plots_dir, run_id, task_id)
-                except Exception as e:
-                    logger.warning(f"[{run_id}] Plot failed for task {task_id+1}: {e}")
+                if HAS_VIZ:
+                    try:
+                        viz.plot_confusion_matrix(y_true, y_pred, plots_dir, run_id, task_id)
+                        viz.plot_roc(y_true, y_score, plots_dir, run_id, task_id)
+                        viz.plot_pr(y_true, y_score, plots_dir, run_id, task_id)
+                        viz.plot_probability_histogram(y_true, y_score, plots_dir, run_id, task_id)
+                    except Exception as e:
+                        logger.warning(f"[{run_id}] Plot failed for task {task_id+1}: {e}")
 
             acc_row.append(acc)
         cl.record(acc_row)
@@ -469,6 +480,7 @@ def train_and_evaluate(
 
     # Stop energy tracker
     if tracker is not None:
+        active_trackers.clear()
         try:
             emissions = tracker.stop()
             co2_kg = float(emissions) if emissions is not None else float("nan")

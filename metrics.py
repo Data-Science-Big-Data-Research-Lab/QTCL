@@ -52,8 +52,8 @@ class CLMetrics:
         T = self.n_tasks
         forgetting = []
         for j in range(T - 1):
-            # Only consider evaluations from the task's training onwards (t >= j)
-            max_acc = max(self.A[t][j] for t in range(j, len(self.A)) if j < len(self.A[t]))
+            # Maximum over every row of the accuracy matrix, including the rows recorded before task j was trained
+            max_acc = max(self.A[t][j] for t in range(len(self.A)) if j < len(self.A[t]))
             final_acc = self.A[-1][j]
             forgetting.append(max_acc - final_acc)
         return float(np.mean(forgetting))

@@ -370,6 +370,15 @@ ewc:
   fisher_samples: 200
   buffer_size: 200          # for replay method
 
+# Coefficients of the other regularization and replay methods. Conventional values, not tuned:
+# the article does not report these methods.
+l2:
+  lambda: 1.0
+si:
+  lambda: 0.1
+replay:
+  weight: 1.0               # weight of the replay loss relative to the loss of the current task
+
 # Default CL method ('naive' | 'l2' | 'ewc' | 'si' | 'derpp' | 'replay')
 cl_method: "derpp"
 
@@ -406,7 +415,7 @@ ablation:
   qubits: [2, 4, 6, 8]
   depths: [1, 2, 3]
   extra_qubits: []
-  seeds: [42]
+  seeds: [42, 123]
 
 # --- EWC Lambda Sensitivity ---
 lambda_sensitivity:

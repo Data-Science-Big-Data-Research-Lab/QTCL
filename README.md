@@ -1,87 +1,85 @@
 # Quantum Transfer-Continual Learning (QTCL)
 
-This repository contains the official implementation of the **Quantum Transfer-Continual Learning (QTCL)** framework, a hybrid quantum-classical architecture designed to mitigate catastrophic forgetting in sequential task learning. 
+Code of the study *Quantum Transfer-Continual Learning*, which compares a classical multilayer
+perceptron head with hybrid heads that add a variational quantum circuit, on top of frozen
+ImageNet-pretrained backbones (ResNet-18, MobileNetV2, EfficientNet-B0), in a sequence of binary
+tasks (Split MNIST, Split CIFAR-10, Split CIFAR-100) trained with continual learning methods
+(DER++ by default).
 
-By combining frozen pretrained convolutional neural network backbones (such as ResNet-18, MobileNetV2, or EfficientNet-B0) with a dual-path classification head (concatenating classical MLP features and variational quantum circuit outputs), the QTCL framework achieves learning stability and retention comparable to fully classical networks under non-stationary streams of data.
-
----
-
-## Project Structure
+## Contents
 
 ```text
-qtcl-github-code/
-├── cl_methods.py          # Implementations of continual learning algorithms (DER++, Replay, EWC, Naive, SI)
-├── trainer.py             # Core online training loop, metrics computation, and main training entry point
-├── metrics.py             # Evaluation metrics calculations (Average Accuracy, Average Forgetting, BWT, etc.)
-├── ewc.py                 # Fisher Information Matrix calculations for Elastic Weight Consolidation
-├── runner.py              # Experiment runner orchestrating grid search parameters and job dispatching
-├── config.yaml            # Default configuration and hyperparameters (datasets, backbones, heads, seeds)
-├── config_smoke.yaml      # Fast verification configuration (smoke test) for debug executions
-├── requirements.txt       # Python package dependencies
-│
-├── data/                  # Continual learning dataset split generators
-│   ├── __init__.py
-│   ├── download_datasets.py  # Utility to download datasets prior to launching multi-job arrays
-│   ├── split_mnist.py        # Split MNIST partitioning loader (10% subset, ImageNet normalization)
-│   ├── split_cifar10.py      # Split CIFAR-10 partitioning loader (10% subset, ImageNet normalization)
-│   └── split_cifar100.py     # Split CIFAR-100 partitioning loader (20-task and 50-task configurations)
-│
-└── heads/                 # Definition of classical and hybrid classification heads
-    ├── __init__.py
-    ├── classical_head.py  # Standard Linear, MLP, and Deep MLP heads
-    └── qiskit_head.py     # VQC heads (using Qiskit Aer, including Heron-calibrated noise models and ZNE/PEC/DD)
+runner.py            builds the list of runs from a configuration and executes them
+trainer.py           training and evaluation of one run
+cl_methods.py        continual learning methods: naive, L2, EWC, SI, experience replay, DER++
+metrics.py           accuracy matrix, average accuracy, forgetting, transfer, F1 and AUC
+report.py            tables of the article computed from the run records
+config.yaml          configuration of the experiments
+config_smoke.yaml    small configuration for a quick check of the installation
+data/                split datasets and dataset download
+heads/               classical heads and hybrid heads (Qiskit)
 ```
 
----
+## Installation
 
-## Getting Started
+Python 3.10. The versions in `requirements.txt` are those of the environment that ran the
+experiments.
 
-### Prerequisites
-
-All code is written in Python 3.10+. It is highly recommended to run the code in a virtual environment (conda or virtualenv).
-
-1. Clone or copy this repository to your local system.
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-### Downloading Datasets
-
-To prevent network races or multiple instances trying to write to the same folders during parallel execution, download the raw datasets first:
 ```bash
-python data/download_datasets.py
-```
-By default, the datasets will be saved under `./data/datasets/`.
-
----
-
-## Running Experiments
-
-### 1. Single Execution
-You can train a single configuration using `trainer.py`. For example, to train a hybrid quantum head on Split MNIST with a ResNet-18 backbone using seed 42 under the default parameters:
-```bash
-python trainer.py --dataset split_mnist --backbone resnet18 --head qk_ideal --seed 42
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-To enable specific continual learning methods (e.g. DER++ or EWC) or adjust hyperparameter weights:
+On a machine without a GPU, add `--extra-index-url https://download.pytorch.org/whl/cpu` to install
+the CPU build of PyTorch.
+
+Download the datasets before launching parallel jobs:
+
 ```bash
-python trainer.py --dataset split_mnist --backbone resnet18 --head qk_ideal --seed 42 --cl_method derpp --alpha 0.7 --beta 0.7
+python data/download_datasets.py --root ./data/datasets
 ```
 
-### 2. Multi-Job Grid Search
-To launch the full benchmarking suite across multiple datasets, backbones, seeds, and head configurations, run `runner.py`:
+## Running
+
+Quick check of the installation (two tasks, 5% of Split MNIST):
+
 ```bash
+python runner.py --config config_smoke.yaml --dataset split_mnist --backbone resnet18 --head mlp --seed 42
+```
+
+One run of the main benchmark, and the whole benchmark:
+
+```bash
+python runner.py --config config.yaml --dataset split_cifar10 --backbone resnet18 --head qk_ideal --seed 42
 python runner.py --config config.yaml
 ```
 
-For a fast verification run to check the compatibility of dependencies, run the smoke test:
+Additional studies are selected with `--study`, for example the circuit ablation:
+
 ```bash
-python runner.py --config config_smoke.yaml
+python runner.py --config config.yaml --study ablation
 ```
 
----
+`--dry-run` lists the runs without executing them, and runs already recorded in `output_dir` are
+skipped. Each run writes `runs.csv`, `training_log.csv` and the CodeCarbon `emissions.csv` under
+`output_dir`.
 
-## License
+Tables from the run records:
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+```bash
+python report.py --results ./results --out ./tables
+```
+
+## Protocol details
+
+- All tasks share one head with two outputs and the task identity is not used (domain-incremental
+  setting).
+- DER++ and experience replay fill their buffer at the end of each task, with the first training
+  batches of the task and the logits of the model just trained.
+- The encoder that feeds the circuit is not trained by default (`train_encoder: false` in the head
+  configuration). Expectation values are estimated with precision 1/64 (`estimator_precision`), and 0
+  gives exact values in the ideal backend.
+- The noisy backend uses a gate-noise model with thermal relaxation and depolarizing errors. Its
+  estimator computes expectation values without simulating measurements, so readout errors and the
+  number of shots do not affect the results.

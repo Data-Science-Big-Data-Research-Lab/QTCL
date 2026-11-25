@@ -92,10 +92,12 @@ def generate_ablation_runs(config: Dict[str, Any]) -> List[RunConfig]:
     ab = config.get("ablation", {})
     if not ab or not ab.get("enabled", True):
         return runs
-    default_q, default_d = 4, 2
     for ds in ab.get("datasets", []):
         for bb in ab.get("backbones", []):
             for hd in ab.get("heads", []):
+                # The configuration of the head in the main benchmark is not repeated in the ablation
+                head_cfg = next((h for h in config.get("heads", []) if h["name"] == hd), {})
+                default_q, default_d = head_cfg.get("n_qubits", 4), head_cfg.get("depth", 2)
                 for q in ab.get("qubits", [default_q]):
                     for d in ab.get("depths", [default_d]):
                         if q == default_q and d == default_d:
